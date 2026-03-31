@@ -28,3 +28,17 @@ export class DriverNotFoundError extends DatabaseMcpError {
     this.name = "DriverNotFoundError";
   }
 }
+
+export class NotInitializedError extends DatabaseMcpError {
+  constructor() {
+    super("Project not initialized. Run init(path) first or use --project-path", "NOT_INITIALIZED");
+    this.name = "NotInitializedError";
+  }
+}
+
+export class ConnectionAlreadyActiveError extends DatabaseMcpError {
+  constructor(connectionId: string) {
+    super(`Connection ${connectionId} is active. Disconnect first before editing`, "CONNECTION_ALREADY_ACTIVE");
+    this.name = "ConnectionAlreadyActiveError";
+  }
+}
