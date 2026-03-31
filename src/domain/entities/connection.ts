@@ -1,7 +1,8 @@
-import { ConnectionEnv, DbDriver } from "../types.js";
+import { ConnectionEnv, ConnectionStatus, DbDriver } from "../types.js";
 
 export interface ConnectionConfig {
   id: string;
+  projectId: string;
   name: string;
   driver: DbDriver;
   env: ConnectionEnv;
@@ -14,4 +15,8 @@ export interface ConnectionConfig {
   preCommands: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ConnectionWithStatus extends ConnectionConfig {
+  status: ConnectionStatus;
 }
