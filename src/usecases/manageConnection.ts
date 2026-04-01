@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import { ConnectionConfig, ConnectionWithStatus } from "../domain/entities/connection.js";
-import { DbDriver, ConnectionEnv, ConnectionStatus } from "../domain/types.js";
+import { DbDriver, ConnectionEnv } from "../domain/types.js";
 import { getProjectId } from "../domain/services/projectContext.js";
 import { encrypt, decrypt } from "../domain/services/crypto.js";
+import * as pool from "../domain/services/connectionPool.js";
 import {
   saveConnection,
   findAllByProject,
@@ -10,16 +11,14 @@ import {
   updateConnection,
   deleteConnection,
 } from "../infrastructure/repositories/connection.repo.js";
-import { ConnectionAlreadyActiveError } from "../shared/errors.js";
-
-// Pool will be implemented in Task 2, stub for now
-function getConnectionStatus(_connId: string): ConnectionStatus {
-  return "disconnected";
-}
-
-function isConnectionActive(_connId: string): boolean {
-  return false;
-}
+import { findByConnection } from "../infrastructure/repositories/terminal.repo.js";
+import { ConnectionAlreadyActiveError, ConnectionError, DriverNotFoundError } from "../shared/errors.js";
+import { DatabaseDriver } from "../infrastructure/drivers/driver.interface.js";
+import { PostgresDriver } from "../infrastructure/drivers/postgres.driver.js";
+import { MysqlDriver } from "../infrastructure/drivers/mysql.driver.js";
+import { MssqlDriver } from "../infrastructure/drivers/mssql.driver.js";
+import { SqliteDriver } from "../infrastructure/drivers/sqlite.driver.js";
+import * as terminalManager from "../infrastructure/terminals/manager.js";
 
 export interface CreateConnectionInput {
   name: string;
@@ -46,6 +45,32 @@ export interface UpdateConnectionInput {
   ssl?: boolean;
   preCommands?: string[];
 }
+
+function createDriver(driver: DbDriver, config: ConnectionConfig, decryptedPassword: string): DatabaseDriver {
+  const driverConfig = {
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    username: config.username,
+    password: decryptedPassword,
+    ssl: config.ssl,
+  };
+
+  switch (driver) {
+    case "postgres":
+      return new PostgresDriver(driverConfig);
+    case "mysql":
+      return new MysqlDriver(driverConfig);
+    case "mssql":
+      return new MssqlDriver(driverConfig);
+    case "sqlite":
+      return new SqliteDriver(driverConfig);
+    default:
+      throw new DriverNotFoundError(driver);
+  }
+}
+
+// --- CRUD (Task 1) ---
 
 export function createConnection(input: CreateConnectionInput): ConnectionConfig {
   const projectId = getProjectId();
@@ -79,7 +104,7 @@ export function listConnections(): ConnectionWithStatus[] {
   return connections.map((conn) => ({
     ...conn,
     password: "***",
-    status: getConnectionStatus(conn.id),
+    status: pool.getStatus(conn.id),
   }));
 }
 
@@ -91,7 +116,7 @@ export function getConnection(id: string): ConnectionWithStatus | null {
   return {
     ...conn,
     password: "***",
-    status: getConnectionStatus(conn.id),
+    status: pool.getStatus(conn.id),
   };
 }
 
@@ -102,7 +127,7 @@ export function editConnection(id: string, input: UpdateConnectionInput): Connec
     throw new Error(`Connection ${id} not found`);
   }
 
-  if (isConnectionActive(id)) {
+  if (pool.isActive(id)) {
     throw new ConnectionAlreadyActiveError(id);
   }
 
@@ -128,7 +153,95 @@ export function editConnection(id: string, input: UpdateConnectionInput): Connec
 export function removeConnection(id: string): boolean {
   const projectId = getProjectId();
 
-  // If active, disconnect first (Task 2 will implement real disconnect)
-  // For now just remove from DB (CASCADE deletes terminals)
+  // If active, disconnect first
+  if (pool.isActive(id)) {
+    disconnectFromDatabase(id);
+  }
+
   return deleteConnection(projectId, id);
+}
+
+// --- Connect/Disconnect (Task 2) ---
+
+export async function connectToDatabase(connectionId: string): Promise<{ status: string; reused: boolean }> {
+  const projectId = getProjectId();
+
+  // Already active? Reuse
+  if (pool.isActive(connectionId)) {
+    return { status: "connected", reused: true };
+  }
+
+  const conn = findById(projectId, connectionId);
+  if (!conn) {
+    throw new ConnectionError(`Connection ${connectionId} not found`);
+  }
+
+  const decryptedPassword = decrypt(conn.password);
+  const driver = createDriver(conn.driver, conn, decryptedPassword);
+
+  // Launch pre-configured terminals
+  const terminals = findByConnection(projectId, connectionId);
+  let terminalPids: number[] = [];
+
+  if (terminals.length > 0) {
+    try {
+      terminalPids = terminalManager.launchAll(connectionId, terminals);
+    } catch (error) {
+      throw new ConnectionError(
+        `Failed to launch terminals: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  // Connect driver
+  try {
+    await driver.connect();
+  } catch (error) {
+    // Kill terminals if driver fails
+    terminalManager.killAll(connectionId);
+    throw new ConnectionError(
+      `Failed to connect to ${conn.driver}://${conn.host}:${conn.port}/${conn.database}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  // Register onDisconnect callback
+  driver.onDisconnect(() => {
+    terminalManager.killAll(connectionId);
+    pool.removeConnection(connectionId);
+  });
+
+  pool.registerConnection(connectionId, driver, terminalPids);
+  return { status: "connected", reused: false };
+}
+
+export function disconnectFromDatabase(connectionId: string): { status: string } {
+  const entry = pool.getConnection(connectionId);
+  if (!entry) {
+    return { status: "disconnected" };
+  }
+
+  // Disconnect driver (fire and forget for sync cleanup)
+  entry.driver.disconnect().catch(() => {});
+
+  // Kill terminals in reverse order
+  terminalManager.killAll(connectionId);
+
+  // Remove from pool
+  pool.removeConnection(connectionId);
+
+  return { status: "disconnected" };
+}
+
+export async function shutdownAll(): Promise<void> {
+  const active = pool.getAllActive();
+  for (const entry of active) {
+    try {
+      await entry.driver.disconnect();
+    } catch {
+      // Best effort
+    }
+    terminalManager.killAll(entry.connectionId);
+  }
+  terminalManager.killAllConnections();
+  pool.clearPool();
 }
