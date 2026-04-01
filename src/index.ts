@@ -3,8 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerInitTool, tryInitFromArgs } from "./tools/init.tool.js";
 import { registerConnectionTools } from "./tools/connection.tool.js";
+import { registerQueryTools } from "./tools/query.tool.js";
 import { shutdownAll } from "./usecases/manageConnection.js";
-import { closeDb } from "./infrastructure/database/local.js";
+import { closeDb, runMigrations } from "./infrastructure/database/local.js";
 
 const server = new McpServer({
   name: "database-mcp",
@@ -13,6 +14,7 @@ const server = new McpServer({
 
 registerInitTool(server);
 registerConnectionTools(server);
+registerQueryTools(server);
 
 async function gracefulShutdown(signal: string): Promise<void> {
   console.error(`[database-mcp] ${signal} received, shutting down...`);
@@ -29,6 +31,8 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 async function main() {
+  await runMigrations();
+
   // Try to auto-initialize from --project-path argument
   tryInitFromArgs(process.argv);
 
