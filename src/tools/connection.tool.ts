@@ -6,6 +6,8 @@ import {
   getConnection,
   editConnection,
   removeConnection,
+  connectToDatabase,
+  disconnectFromDatabase,
 } from "../usecases/manageConnection.js";
 
 const driverEnum = z.enum(["postgres", "mysql", "mssql", "sqlite"]);
@@ -139,6 +141,50 @@ export function registerConnectionTools(server: McpServer): void {
               text: JSON.stringify({ deleted, id }),
             },
           ],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    "connect_to_database",
+    "Connect to a database. Opens a persistent connection that stays alive for queries. Reuses if already connected.",
+    {
+      id: z.string().describe("Connection ID"),
+    },
+    async ({ id }) => {
+      try {
+        const result = await connectToDatabase(id);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    "disconnect_from_database",
+    "Disconnect from a database. Closes driver, kills associated terminals, removes from pool.",
+    {
+      id: z.string().describe("Connection ID"),
+    },
+    async ({ id }) => {
+      try {
+        const result = disconnectFromDatabase(id);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
