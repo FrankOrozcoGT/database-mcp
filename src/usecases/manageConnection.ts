@@ -19,6 +19,7 @@ import { MysqlDriver } from "../infrastructure/drivers/mysql.driver.js";
 import { MssqlDriver } from "../infrastructure/drivers/mssql.driver.js";
 import { SqliteDriver } from "../infrastructure/drivers/sqlite.driver.js";
 import * as terminalManager from "../infrastructure/terminals/manager.js";
+import { getNotifier } from "../domain/services/notifier.js";
 
 export interface CreateConnectionInput {
   name: string;
@@ -208,9 +209,11 @@ export async function connectToDatabase(connectionId: string): Promise<{ status:
   driver.onDisconnect(() => {
     terminalManager.killAll(connectionId);
     pool.removeConnection(connectionId);
+    getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "disconnected" });
   });
 
   pool.registerConnection(connectionId, driver, terminalPids);
+  getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "connected" });
   return { status: "connected", reused: false };
 }
 
@@ -229,6 +232,7 @@ export function disconnectFromDatabase(connectionId: string): { status: string }
   // Remove from pool
   pool.removeConnection(connectionId);
 
+  getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "disconnected" });
   return { status: "disconnected" };
 }
 

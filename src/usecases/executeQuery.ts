@@ -11,6 +11,7 @@ import {
 } from "../infrastructure/repositories/queryHistory.repo.js";
 import { QueryResult } from "../domain/entities/query.js";
 import { ConnectionError, AuthRequiredError } from "../shared/errors.js";
+import { getNotifier } from "../domain/services/notifier.js";
 
 export async function executeQuery(connectionId: string, sql: string): Promise<QueryResult> {
   const projectId = getProjectId();
@@ -31,8 +32,15 @@ export async function executeQuery(connectionId: string, sql: string): Promise<Q
   const queryType = parseQueryType(sql);
 
   if (requiresAuth(connConfig.env, queryType)) {
-    // WS auth flow comes in Task 4 — for now, block with error
-    throw new AuthRequiredError();
+    const notifier = getNotifier();
+    if (!notifier.isConnected()) {
+      throw new AuthRequiredError("Write operations on production require authorization. Not connected to wrapper.");
+    }
+
+    const approved = await notifier.requestAuth(connectionId, sql, connConfig.env);
+    if (!approved) {
+      throw new AuthRequiredError("Write operation on production was denied or timed out.");
+    }
   }
 
   // Execute with timing
