@@ -13,10 +13,10 @@ import { registerInitTool, tryInitFromArgs } from "./tools/init.tool.js";
 import { registerConnectionTools } from "./tools/connection.tool.js";
 import { registerQueryTools } from "./tools/query.tool.js";
 import { registerSchemaTools } from "./tools/schema.tool.js";
-import { shutdownAll } from "./usecases/manageConnection.js";
 import { closeDb, runMigrations } from "./infrastructure/database/local.js";
 import { setNotifier } from "./domain/services/notifier.js";
 import { socketNotifier, connect, disconnect } from "./infrastructure/websocket/client.js";
+import { syncActiveConnections } from "./infrastructure/ipc/client.js";
 
 const server = new McpServer({
   name: "database-mcp",
@@ -31,7 +31,7 @@ registerSchemaTools(server);
 async function gracefulShutdown(signal: string): Promise<void> {
   log(`${signal} received, shutting down...`);
   try {
-    await shutdownAll();
+    // Don't kill daemon — connections persist
     await disconnect();
     closeDb();
   } catch (error) {
@@ -59,6 +59,19 @@ async function main() {
   setNotifier(socketNotifier);
   connect(wsUrl, "/mcp");
   log(`Socket.IO connecting to ${wsUrl}/mcp`);
+
+  // Sync active daemon connections to wrapper
+  try {
+    const active = await syncActiveConnections();
+    for (const conn of active) {
+      socketNotifier.emit("connection:status", { type: "display", connId: conn.connId, status: conn.status });
+    }
+    if (active.length > 0) {
+      log(`Synced ${active.length} active connections to wrapper`);
+    }
+  } catch {
+    log("Daemon not available yet, will auto-spawn on first use");
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

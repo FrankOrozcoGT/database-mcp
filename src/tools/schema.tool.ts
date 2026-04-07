@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getProjectId } from "../domain/services/projectContext.js";
-import * as pool from "../domain/services/connectionPool.js";
+import { send } from "../infrastructure/ipc/client.js";
+import { SchemaTable } from "../infrastructure/drivers/driver.interface.js";
 
 export function registerSchemaTools(server: McpServer): void {
   server.tool(
@@ -13,17 +14,17 @@ export function registerSchemaTools(server: McpServer): void {
     async ({ connectionId }) => {
       try {
         getProjectId(); // Ensure initialized
-        const entry = pool.getConnection(connectionId);
-        if (!entry || !entry.driver.isConnected()) {
+        const response = await send({ action: "getSchema", payload: { connId: connectionId } });
+        if (!response.ok) {
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ error: `Connection ${connectionId} is not active. Connect first.` }) }],
+            content: [{ type: "text" as const, text: JSON.stringify({ error: response.error }) }],
             isError: true,
           };
         }
 
-        const schema = await entry.driver.getSchema();
+        const data = response.data as { tables: SchemaTable[] };
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(schema.tables.map((t) => ({ name: t.name, schema: t.schema, columnCount: t.columns.length, fkCount: t.foreignKeys.length })), null, 2) }],
+          content: [{ type: "text" as const, text: JSON.stringify(data.tables.map((t) => ({ name: t.name, schema: t.schema, columnCount: t.columns.length, fkCount: t.foreignKeys.length })), null, 2) }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -45,16 +46,16 @@ export function registerSchemaTools(server: McpServer): void {
     async ({ connectionId, tableName }) => {
       try {
         getProjectId(); // Ensure initialized
-        const entry = pool.getConnection(connectionId);
-        if (!entry || !entry.driver.isConnected()) {
+        const response = await send({ action: "getSchema", payload: { connId: connectionId } });
+        if (!response.ok) {
           return {
-            content: [{ type: "text" as const, text: JSON.stringify({ error: `Connection ${connectionId} is not active. Connect first.` }) }],
+            content: [{ type: "text" as const, text: JSON.stringify({ error: response.error }) }],
             isError: true,
           };
         }
 
-        const schema = await entry.driver.getSchema();
-        const table = schema.tables.find((t) => t.name === tableName);
+        const data = response.data as { tables: SchemaTable[] };
+        const table = data.tables.find((t) => t.name === tableName);
         if (!table) {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ error: `Table ${tableName} not found` }) }],

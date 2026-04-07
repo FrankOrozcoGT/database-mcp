@@ -3,7 +3,6 @@ import { ConnectionConfig, ConnectionWithStatus } from "../domain/entities/conne
 import { DbDriver, ConnectionEnv } from "../domain/types.js";
 import { getProjectId } from "../domain/services/projectContext.js";
 import { encrypt, decrypt } from "../domain/services/crypto.js";
-import * as pool from "../domain/services/connectionPool.js";
 import {
   saveConnection,
   findAllByProject,
@@ -12,14 +11,10 @@ import {
   deleteConnection,
 } from "../infrastructure/repositories/connection.repo.js";
 import { findByConnection } from "../infrastructure/repositories/terminal.repo.js";
-import { ConnectionAlreadyActiveError, ConnectionError, DriverNotFoundError } from "../shared/errors.js";
-import { DatabaseDriver } from "../infrastructure/drivers/driver.interface.js";
-import { PostgresDriver } from "../infrastructure/drivers/postgres.driver.js";
-import { MysqlDriver } from "../infrastructure/drivers/mysql.driver.js";
-import { MssqlDriver } from "../infrastructure/drivers/mssql.driver.js";
-import { SqliteDriver } from "../infrastructure/drivers/sqlite.driver.js";
-import * as terminalManager from "../infrastructure/terminals/manager.js";
+import { ConnectionAlreadyActiveError, ConnectionError } from "../shared/errors.js";
 import { getNotifier } from "../domain/services/notifier.js";
+import { send } from "../infrastructure/ipc/client.js";
+import { ConnectPayload } from "../daemon/protocol.js";
 
 export interface CreateConnectionInput {
   name: string;
@@ -47,31 +42,7 @@ export interface UpdateConnectionInput {
   preCommands?: string[];
 }
 
-function createDriver(driver: DbDriver, config: ConnectionConfig, decryptedPassword: string): DatabaseDriver {
-  const driverConfig = {
-    host: config.host,
-    port: config.port,
-    database: config.database,
-    username: config.username,
-    password: decryptedPassword,
-    ssl: config.ssl,
-  };
-
-  switch (driver) {
-    case "postgres":
-      return new PostgresDriver(driverConfig);
-    case "mysql":
-      return new MysqlDriver(driverConfig);
-    case "mssql":
-      return new MssqlDriver(driverConfig);
-    case "sqlite":
-      return new SqliteDriver(driverConfig);
-    default:
-      throw new DriverNotFoundError(driver);
-  }
-}
-
-// --- CRUD (Task 1) ---
+// --- CRUD ---
 
 export function createConnection(input: CreateConnectionInput): ConnectionConfig {
   const projectId = getProjectId();
@@ -98,38 +69,58 @@ export function createConnection(input: CreateConnectionInput): ConnectionConfig
   return { ...conn, password: "***" };
 }
 
-export function listConnections(): ConnectionWithStatus[] {
+export async function listConnections(): Promise<ConnectionWithStatus[]> {
   const projectId = getProjectId();
   const connections = findAllByProject(projectId);
+
+  // Get status from daemon for all connections
+  const statusResponse = await send({ action: "statusAll" });
+  const activeMap = new Map<string, string>();
+  if (statusResponse.ok) {
+    const data = statusResponse.data as { connections: { connId: string; status: string }[] };
+    for (const c of data.connections) {
+      activeMap.set(c.connId, c.status);
+    }
+  }
 
   return connections.map((conn) => ({
     ...conn,
     password: "***",
-    status: pool.getStatus(conn.id),
+    status: (activeMap.get(conn.id) as "connected" | "disconnected" | "error") ?? "disconnected",
   }));
 }
 
-export function getConnection(id: string): ConnectionWithStatus | null {
+export async function getConnection(id: string): Promise<ConnectionWithStatus | null> {
   const projectId = getProjectId();
   const conn = findById(projectId, id);
   if (!conn) return null;
 
+  const statusResponse = await send({ action: "status", payload: { connId: id } });
+  const status = statusResponse.ok
+    ? (statusResponse.data as { status: string }).status as "connected" | "disconnected" | "error"
+    : "disconnected";
+
   return {
     ...conn,
     password: "***",
-    status: pool.getStatus(conn.id),
+    status,
   };
 }
 
-export function editConnection(id: string, input: UpdateConnectionInput): ConnectionConfig {
+export async function editConnection(id: string, input: UpdateConnectionInput): Promise<ConnectionConfig> {
   const projectId = getProjectId();
   const existing = findById(projectId, id);
   if (!existing) {
     throw new Error(`Connection ${id} not found`);
   }
 
-  if (pool.isActive(id)) {
-    throw new ConnectionAlreadyActiveError(id);
+  // Check if active in daemon
+  const statusResponse = await send({ action: "status", payload: { connId: id } });
+  if (statusResponse.ok) {
+    const data = statusResponse.data as { status: string };
+    if (data.status === "connected") {
+      throw new ConnectionAlreadyActiveError(id);
+    }
   }
 
   const updated: ConnectionConfig = {
@@ -151,26 +142,25 @@ export function editConnection(id: string, input: UpdateConnectionInput): Connec
   return { ...updated, password: "***" };
 }
 
-export function removeConnection(id: string): boolean {
+export async function removeConnection(id: string): Promise<boolean> {
   const projectId = getProjectId();
 
-  // If active, disconnect first
-  if (pool.isActive(id)) {
-    disconnectFromDatabase(id);
+  // If active in daemon, disconnect first
+  const statusResponse = await send({ action: "status", payload: { connId: id } });
+  if (statusResponse.ok) {
+    const data = statusResponse.data as { status: string };
+    if (data.status === "connected") {
+      await disconnectFromDatabase(id);
+    }
   }
 
   return deleteConnection(projectId, id);
 }
 
-// --- Connect/Disconnect (Task 2) ---
+// --- Connect/Disconnect via Daemon ---
 
 export async function connectToDatabase(connectionId: string): Promise<{ status: string; reused: boolean }> {
   const projectId = getProjectId();
-
-  // Already active? Reuse
-  if (pool.isActive(connectionId)) {
-    return { status: "connected", reused: true };
-  }
 
   const conn = findById(projectId, connectionId);
   if (!conn) {
@@ -178,74 +168,52 @@ export async function connectToDatabase(connectionId: string): Promise<{ status:
   }
 
   const decryptedPassword = decrypt(conn.password);
-  const driver = createDriver(conn.driver, conn, decryptedPassword);
 
-  // Launch pre-configured terminals
+  // Get terminals for this connection
   const terminals = findByConnection(projectId, connectionId);
-  let terminalPids: number[] = [];
 
-  if (terminals.length > 0) {
-    try {
-      terminalPids = terminalManager.launchAll(connectionId, terminals);
-    } catch (error) {
-      throw new ConnectionError(
-        `Failed to launch terminals: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+  const payload: ConnectPayload = {
+    connId: connectionId,
+    driver: conn.driver,
+    env: conn.env,
+    host: conn.host,
+    port: conn.port,
+    database: conn.database,
+    username: conn.username,
+    password: decryptedPassword,
+    ssl: conn.ssl,
+    terminals: terminals.map((t) => ({
+      id: t.id,
+      label: t.label,
+      command: t.command,
+      slot: t.slot,
+      order: t.order,
+    })),
+  };
+
+  const response = await send({ action: "connect", payload });
+  if (!response.ok) {
+    throw new ConnectionError(response.error ?? "Failed to connect");
   }
 
-  // Connect driver
-  try {
-    await driver.connect();
-  } catch (error) {
-    // Kill terminals if driver fails
-    terminalManager.killAll(connectionId);
-    throw new ConnectionError(
-      `Failed to connect to ${conn.driver}://${conn.host}:${conn.port}/${conn.database}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  const data = response.data as { status: string; reused: boolean };
+  if (!data.reused) {
+    getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "connected" });
   }
-
-  // Register onDisconnect callback
-  driver.onDisconnect(() => {
-    terminalManager.killAll(connectionId);
-    pool.removeConnection(connectionId);
-    getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "disconnected" });
-  });
-
-  pool.registerConnection(connectionId, driver, terminalPids);
-  getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "connected" });
-  return { status: "connected", reused: false };
+  return data;
 }
 
-export function disconnectFromDatabase(connectionId: string): { status: string } {
-  const entry = pool.getConnection(connectionId);
-  if (!entry) {
-    return { status: "disconnected" };
+export async function disconnectFromDatabase(connectionId: string): Promise<{ status: string }> {
+  const response = await send({ action: "disconnect", payload: { connId: connectionId } });
+  if (!response.ok) {
+    throw new ConnectionError(response.error ?? "Failed to disconnect");
   }
-
-  // Disconnect driver (fire and forget for sync cleanup)
-  entry.driver.disconnect().catch(() => {});
-
-  // Kill terminals in reverse order
-  terminalManager.killAll(connectionId);
-
-  // Remove from pool
-  pool.removeConnection(connectionId);
 
   getNotifier().emit("connection:status", { type: "display", connId: connectionId, status: "disconnected" });
   return { status: "disconnected" };
 }
 
 export async function shutdownAll(): Promise<void> {
-  const active = pool.getAllActive();
-  for (const entry of active) {
-    try {
-      await entry.driver.disconnect();
-    } catch {
-      // Best effort
-    }
-    terminalManager.killAll(entry.connectionId);
-  }
-  terminalManager.killAllConnections();
-  pool.clearPool();
+  // MCP shutdown — we don't kill the daemon, connections persist
+  // Just cleanup local resources
 }
