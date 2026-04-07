@@ -2,7 +2,7 @@ import { io, Socket } from "socket.io-client";
 import { randomUUID } from "crypto";
 import { getProjectId } from "../../domain/services/projectContext.js";
 import { Notifier } from "../../domain/services/notifier.js";
-import * as pool from "../../domain/services/connectionPool.js";
+import { send } from "../ipc/client.js";
 import { executeQuery } from "../../usecases/executeQuery.js";
 
 let socket: Socket | null = null;
@@ -68,14 +68,13 @@ function handleAuthDeny(data: { requestId: string }): void {
 
 async function handleSchemaGet(data: { connId: string }): Promise<void> {
   try {
-    const entry = pool.getConnection(data.connId);
-    if (!entry || !entry.driver.isConnected()) {
-      socketNotifier.emit("error", { type: "display", message: `Connection ${data.connId} is not active. Connect first.`, code: "SCHEMA_ERROR" });
+    const response = await send({ action: "getSchema", payload: { connId: data.connId } });
+    if (!response.ok) {
+      socketNotifier.emit("error", { type: "display", message: response.error ?? "Schema error", code: "SCHEMA_ERROR" });
       return;
     }
-
-    const schema = await entry.driver.getSchema();
-    socketNotifier.emit("schema:tables", { type: "display", connId: data.connId, tables: schema.tables as unknown as Record<string, unknown>[] });
+    const result = response.data as { tables: Record<string, unknown>[] };
+    socketNotifier.emit("schema:tables", { type: "display", connId: data.connId, tables: result.tables });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     socketNotifier.emit("error", { type: "display", message, code: "SCHEMA_ERROR" });
@@ -100,9 +99,16 @@ async function handleQueryExecute(data: { connId: string; sql: string }): Promis
   }
 }
 
-function handleConnectionTest(data: { connId: string }): void {
-  const status = pool.getStatus(data.connId);
-  socketNotifier.emit("connection:status", { type: "display", connId: data.connId, status });
+async function handleConnectionTest(data: { connId: string }): Promise<void> {
+  try {
+    const response = await send({ action: "status", payload: { connId: data.connId } });
+    const status = response.ok
+      ? (response.data as { status: string }).status
+      : "disconnected";
+    socketNotifier.emit("connection:status", { type: "display", connId: data.connId, status });
+  } catch {
+    socketNotifier.emit("connection:status", { type: "display", connId: data.connId, status: "disconnected" });
+  }
 }
 
 // --- Connect / Disconnect ---
