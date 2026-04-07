@@ -5,12 +5,15 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "database-mcp": "dist/index.js"
+    "database-mcp": "dist/index.js",
+    "database-mcp-daemon": "dist/daemon/index.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "dev:daemon": "tsx src/daemon/index.ts",
+    "start": "node dist/index.js",
+    "daemon": "node dist/daemon/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
