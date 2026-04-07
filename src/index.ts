@@ -15,7 +15,7 @@ import { registerQueryTools } from "./tools/query.tool.js";
 import { registerSchemaTools } from "./tools/schema.tool.js";
 import { closeDb, runMigrations } from "./infrastructure/database/local.js";
 import { setNotifier } from "./domain/services/notifier.js";
-import { socketNotifier, connect, disconnect } from "./infrastructure/websocket/client.js";
+import { socketNotifier, connect, disconnect, setSource } from "./infrastructure/websocket/client.js";
 import { syncActiveConnections } from "./infrastructure/ipc/client.js";
 
 const server = new McpServer({
@@ -53,6 +53,13 @@ async function main() {
   // Try to auto-initialize from --project-path argument
   tryInitFromArgs(process.argv);
   log("Init from args done");
+
+  // Parse --source argument
+  const sourceIdx = process.argv.indexOf("--source");
+  if (sourceIdx !== -1 && process.argv[sourceIdx + 1]) {
+    setSource(process.argv[sourceIdx + 1]);
+    log(`Source set to: ${process.argv[sourceIdx + 1]}`);
+  }
 
   // Connect to wrapper via Socket.IO and inject notifier
   const wsUrl = process.env.MCP_WS_URL || "http://localhost:3050";

@@ -15,12 +15,20 @@ interface PendingAuth {
 
 const pendingAuths = new Map<string, PendingAuth>();
 
+// --- Source from args ---
+
+let source: string = "mcp";
+
+export function setSource(value: string): void {
+  source = value;
+}
+
 // --- Notifier implementation ---
 
 export const socketNotifier: Notifier = {
   emit(event: string, data: Record<string, unknown>): void {
     if (socket?.connected) {
-      socket.emit(event, data);
+      socket.emit(event, { ...data, source });
     }
   },
 
