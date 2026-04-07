@@ -132,7 +132,7 @@ export function connect(url: string = "http://localhost:3050", namespace: string
 
   socket.on("connect", () => {
     const projectId = getProjectId();
-    socket!.emit("welcome", { projectId, mcpType: "database" });
+    socket!.emit("welcome", { projectId, mcpType: "database", source });
     console.error(`[database-mcp] Connected to wrapper at ${url}${namespace}`);
   });
 
