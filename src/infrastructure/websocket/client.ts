@@ -130,10 +130,21 @@ export function connect(url: string = "http://localhost:3050", namespace: string
     reconnectionDelayMax: 5000,
   });
 
-  socket.on("connect", () => {
+  socket.on("connect", async () => {
     const projectId = getProjectId();
     socket!.emit("welcome", { projectId, mcpType: "database", source });
     console.error(`[database-mcp] Connected to wrapper at ${url}${namespace}`);
+
+    // Sync active daemon connections on every connect/reconnect
+    try {
+      const { syncActiveConnections } = await import("../ipc/client.js");
+      const active = await syncActiveConnections();
+      for (const conn of active) {
+        socketNotifier.emit("connection:status", { type: "display", connId: conn.connId, status: conn.status });
+      }
+    } catch {
+      // Daemon not available yet
+    }
   });
 
   socket.on("disconnect", (reason) => {
