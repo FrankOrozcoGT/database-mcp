@@ -51,7 +51,7 @@ export function registerConnectionTools(server: McpServer): void {
     {},
     async () => {
       try {
-        const connections = listConnections();
+        const connections = await listConnections();
         return {
           content: [{ type: "text" as const, text: JSON.stringify(connections, null, 2) }],
         };
@@ -73,7 +73,7 @@ export function registerConnectionTools(server: McpServer): void {
     },
     async ({ id }) => {
       try {
-        const conn = getConnection(id);
+        const conn = await getConnection(id);
         if (!conn) {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ error: "Connection not found" }) }],
@@ -111,7 +111,7 @@ export function registerConnectionTools(server: McpServer): void {
     },
     async ({ id, ...updates }) => {
       try {
-        const conn = editConnection(id, updates);
+        const conn = await editConnection(id, updates);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(conn, null, 2) }],
         };
@@ -133,7 +133,7 @@ export function registerConnectionTools(server: McpServer): void {
     },
     async ({ id }) => {
       try {
-        const deleted = removeConnection(id);
+        const deleted = await removeConnection(id);
         return {
           content: [
             {
@@ -182,7 +182,7 @@ export function registerConnectionTools(server: McpServer): void {
     },
     async ({ id }) => {
       try {
-        const result = disconnectFromDatabase(id);
+        const result = await disconnectFromDatabase(id);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
         };
