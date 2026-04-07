@@ -1,7 +1,6 @@
 import { getProjectId } from "../domain/services/projectContext.js";
 import { parseQueryType } from "../domain/services/queryParser.js";
 import { requiresAuth } from "../domain/services/authGuard.js";
-import * as pool from "../domain/services/connectionPool.js";
 import { findById } from "../infrastructure/repositories/connection.repo.js";
 import {
   saveQueryHistory,
@@ -12,15 +11,10 @@ import {
 import { QueryResult } from "../domain/entities/query.js";
 import { ConnectionError, AuthRequiredError } from "../shared/errors.js";
 import { getNotifier } from "../domain/services/notifier.js";
+import { send } from "../infrastructure/ipc/client.js";
 
 export async function executeQuery(connectionId: string, sql: string): Promise<QueryResult> {
   const projectId = getProjectId();
-
-  // Get active driver from pool
-  const entry = pool.getConnection(connectionId);
-  if (!entry || !entry.driver.isConnected()) {
-    throw new ConnectionError(`Connection ${connectionId} is not active. Connect first.`);
-  }
 
   // Get connection config for env check
   const connConfig = findById(projectId, connectionId);
@@ -43,36 +37,15 @@ export async function executeQuery(connectionId: string, sql: string): Promise<Q
     }
   }
 
-  // Execute with timing
+  // Execute via daemon
   const startTime = Date.now();
   let historyEntry: QueryHistoryEntry;
 
-  try {
-    const result = await entry.driver.execute(sql);
-    const durationMs = Date.now() - startTime;
+  const response = await send({ action: "execute", payload: { connId: connectionId, sql } });
+  const durationMs = Date.now() - startTime;
 
-    historyEntry = {
-      projectId,
-      connectionId,
-      sqlText: sql,
-      queryType,
-      durationMs,
-      rowCount: result.rowCount,
-      error: null,
-      executedAt: new Date().toISOString(),
-    };
-    saveQueryHistory(historyEntry);
-
-    return {
-      columns: result.columns,
-      rows: result.rows,
-      rowCount: result.rowCount,
-      duration: durationMs,
-      type: queryType,
-    };
-  } catch (error) {
-    const durationMs = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : String(error);
+  if (!response.ok) {
+    const errorMessage = response.error ?? "Query execution failed";
 
     historyEntry = {
       projectId,
@@ -88,6 +61,28 @@ export async function executeQuery(connectionId: string, sql: string): Promise<Q
 
     throw new ConnectionError(`Query error: ${errorMessage}`);
   }
+
+  const data = response.data as { columns: string[]; rows: Record<string, unknown>[]; rowCount: number };
+
+  historyEntry = {
+    projectId,
+    connectionId,
+    sqlText: sql,
+    queryType,
+    durationMs,
+    rowCount: data.rowCount,
+    error: null,
+    executedAt: new Date().toISOString(),
+  };
+  saveQueryHistory(historyEntry);
+
+  return {
+    columns: data.columns,
+    rows: data.rows,
+    rowCount: data.rowCount,
+    duration: durationMs,
+    type: queryType,
+  };
 }
 
 export function getQueryHistory(connectionId: string, limit?: number): QueryHistoryEntry[] {
