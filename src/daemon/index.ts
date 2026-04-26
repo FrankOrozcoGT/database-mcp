@@ -21,14 +21,20 @@ function log(msg: string): void {
   appendFileSync(LOG_FILE, line);
 }
 
+function getProjectId(): string {
+  const idx = process.argv.indexOf("--project-id");
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : "default";
+}
+
 function getSocketPath(): string {
   const platform = getPlatform();
+  const projectId = getProjectId();
   if (platform.osType === "windows") {
-    return "\\\\.\\pipe\\database-mcp-daemon";
+    return `\\\\.\\pipe\\database-mcp-daemon-${projectId}`;
   }
   const dataDir = platform.dataDir("database-mcp");
   mkdirSync(dataDir, { recursive: true });
-  return `${dataDir}/daemon.sock`;
+  return `${dataDir}/daemon-${projectId}.sock`;
 }
 
 function cleanupStaleSocket(socketPath: string): void {

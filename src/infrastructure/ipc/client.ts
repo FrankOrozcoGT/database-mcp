@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { getPlatform } from "../platform/index.js";
 import { DaemonRequest, DaemonResponse } from "../../daemon/protocol.js";
+import { getProjectId, isInitialized } from "../../domain/services/projectContext.js";
 
 const REQUEST_TIMEOUT = 30000;
 const SPAWN_MAX_RETRIES = 5;
@@ -11,12 +12,13 @@ const SPAWN_RETRY_DELAY = 1000;
 
 function getSocketPath(): string {
   const platform = getPlatform();
+  const projectId = isInitialized() ? getProjectId() : "default";
   if (platform.osType === "windows") {
-    return "\\\\.\\pipe\\database-mcp-daemon";
+    return `\\\\.\\pipe\\database-mcp-daemon-${projectId}`;
   }
   const dataDir = platform.dataDir("database-mcp");
   mkdirSync(dataDir, { recursive: true });
-  return `${dataDir}/daemon.sock`;
+  return `${dataDir}/daemon-${projectId}.sock`;
 }
 
 function getDaemonInfo(): { execPath: string; args: string[] } {
@@ -35,7 +37,8 @@ function getDaemonInfo(): { execPath: string; args: string[] } {
 
 function spawnDaemon(): void {
   const { execPath, args } = getDaemonInfo();
-  const child = spawn(execPath, args, {
+  const projectId = isInitialized() ? getProjectId() : "default";
+  const child = spawn(execPath, [...args, "--project-id", projectId], {
     detached: true,
     stdio: "ignore",
   });

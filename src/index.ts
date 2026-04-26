@@ -61,7 +61,11 @@ async function main() {
   }
 
   // Connect to wrapper via Socket.IO and inject notifier
-  const wsUrl = process.env.MCP_WS_URL || "http://localhost:3050";
+  const wrapperPortIdx = process.argv.indexOf("--wrapper-port");
+  const wrapperPort = wrapperPortIdx !== -1 && process.argv[wrapperPortIdx + 1]
+    ? process.argv[wrapperPortIdx + 1]
+    : "3050";
+  const wsUrl = `http://localhost:${wrapperPort}`;
   setNotifier(socketNotifier);
   connect(wsUrl, "/mcp");
   log(`Socket.IO connecting to ${wsUrl}/mcp`);

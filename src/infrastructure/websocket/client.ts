@@ -123,6 +123,7 @@ async function handleConnectionTest(data: { connId: string }): Promise<void> {
 
 export function connect(url: string = "http://localhost:3050", namespace: string = "/mcp"): Socket {
   socket = io(`${url}${namespace}`, {
+    transports: ["websocket"],
     autoConnect: true,
     reconnection: true,
     reconnectionAttempts: Infinity,
